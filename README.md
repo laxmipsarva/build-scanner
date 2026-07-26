@@ -88,7 +88,7 @@ Once this repo is pushed to GitHub and tagged (e.g. `v1`), any other repo can
 run the scanner in CI without installing anything itself:
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
 - uses: laxmipsarva/build-scanner@v1
   with:
     path: .
