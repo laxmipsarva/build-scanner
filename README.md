@@ -1,7 +1,31 @@
 # build-scanner
 
-Static scanner that walks a local build/source folder and flags common web
-vulnerability patterns:
+Modern web apps ship through build pipelines, bundlers, and CI/CD
+systems fast enough that the most common, highest-impact vulnerability
+classes — SQL/NoSQL injection, permissive CORS, weak CSP, missing CSRF
+protection — routinely slip through because catching them requires someone
+to actually read the source. build-scanner finds them automatically, in
+seconds, before they reach a PR review or production:
+
+- **Shift-left, not bolt-on.** Runs as a CLI locally or as a GitHub Action
+  in CI, so findings surface before merge instead of during an incident.
+- **Zero setup, zero infrastructure.** Pure static source scan — no sandbox,
+  no live target, no API keys, no service to stand up. Point it at a folder
+  and get a report in seconds.
+- **CI-native output.** Human-readable text, JSON for tooling/dashboards,
+  and a `--fail-on` severity gate so a pipeline can hard-fail on real risk
+  without wiring up a full SAST platform.
+- **Framework-aware, not just a regex sweep.** Dedicated rules for
+  Express-style servers, Next.js (App Router, Pages API, Server Actions,
+  `middleware.ts`), and Vite/CRA — see the coverage tables below for exactly
+  what's recognized in each.
+- **Honest about what it is.** A fast, heuristic first pass that flags the
+  code patterns behind classic vulnerabilities — unparameterized queries,
+  wildcard/reflected CORS, `unsafe-inline`/`unsafe-eval` CSP, unprotected
+  state-changing routes — meant to complement, not replace, full SAST/DAST
+  tooling and manual security review.
+
+It flags these patterns:
 
 - **SQL Injection** — string-concatenated or template-literal SQL queries,
   raw DB errors leaked to the client, and denylist-style SQLi filters (see
@@ -82,6 +106,43 @@ node dist/cli.js ./path/to/project --fail-on high
 If you `npm link` (or install it globally), the same commands are available
 via the `build-scanner` binary instead of `node dist/cli.js`.
 
+## Input / Output reference
+
+### CLI
+
+| Input | Values | Output / behavior |
+|---|---|---|
+| `<path>` (positional, default `.`) | directory or file path | Scans that directory (recursively) or single file |
+| `-f, --format <format>` | `text` (default) \| `json` | `text`: human-readable report on stdout. `json`: the full `ScanResult` object serialized to stdout |
+| `-r, --rules <ids>` | comma-separated rule IDs | Only the listed rules run; an unknown id prints a warning to stderr and contributes no findings |
+| `--fail-on <severity>` | `critical`\|`high`\|`medium`\|`low`\|`info` | Report is printed as usual; process exit code is `1` if any finding at or above that severity exists, `0` otherwise. An invalid value prints an error to stderr and exits `2` |
+| `-l, --list-files` | flag | Text format only: appends the full list of scanned files to the report |
+| `rules` (subcommand) | none | Prints `id`, `category`, `description` (tab-separated) for every registered rule, one per line — no scan is run |
+| no flags at all | — | Scans `.`, runs every rule, prints the text report, exits `0` regardless of findings |
+
+### GitHub Action
+
+| Input | Default | Output / behavior |
+|---|---|---|
+| `path` | `.` | Directory or file scanned, relative to the caller repo checkout |
+| `format` | `text` | `text` or `json` report written to the job log |
+| `rules` | `''` (all rules) | Comma-separated rule IDs to run |
+| `fail-on` | `''` (never fails) | Step fails (non-zero exit) if a finding at or above this severity is present |
+| `list-files` | `false` | `true` appends the scanned-file list to the log (text format only) |
+
+The action has no `outputs:` — results are only available via the job log and the step's exit code, not as a downstream-consumable output variable.
+
+### Programmatic API
+
+| Function | Input | Output |
+|---|---|---|
+| `scan(options, rules)` | `options: { root, include?, exclude?, ruleIds? }`, `rules: Rule[]` (e.g. `allRules`) | `Promise<ScanResult>` — `{ root, filesScanned, scannedFiles, findings, durationMs }` |
+| `formatText(result, opts?)` | `result: ScanResult`, `opts?: { listFiles?: boolean }` | `string` — human-readable report |
+| `formatJson(result)` | `result: ScanResult` | `string` — JSON-serialized `ScanResult` |
+| `allRules` | — | `Rule[]` — every registered rule |
+
+Each `Finding` in `ScanResult.findings` is `{ ruleId, category, severity, message, file, line, column?, snippet, recommendation }` (see `src/core/types.ts`).
+
 ## Use as a GitHub Action
 
 Once this repo is pushed to GitHub and tagged (e.g. `v1`), any other repo can
@@ -103,61 +164,3 @@ the job fails exactly the way a local `--fail-on` run would.
 
 Note: the `@v1` tag doesn't exist yet — until a release is tagged, reference
 the action by branch or commit SHA (e.g. `laxmipsarva/build-scanner@main`).
-
-## Programmatic use
-
-```ts
-import { scan, allRules, formatText } from "build-scanner";
-
-const result = await scan({ root: "./path/to/project" }, allRules);
-console.log(formatText(result));
-```
-
-## Development
-
-```bash
-npm run dev -- ./path/to/project   # run the CLI from source via tsx
-npm test                           # run the unit tests (vitest)
-npm run typecheck
-```
-
-Each rule lives in `src/rules/*.ts` and has matching vulnerable/safe
-fixtures in `tests/fixtures/` plus a test in `tests/unit/`. To add a new
-rule: implement the `Rule` interface (see `src/core/types.ts`), register it
-in `src/rules/index.ts`, and add fixtures + a test.
-
-## SQL injection scenario coverage
-
-`src/rules/sql-injection.ts` is exercised against 18 fixtures in
-`tests/fixtures/sql-scenarios/`, one per classic SQL injection attack
-scenario (PortSwigger Web Security Academy naming), via
-`tests/unit/sql-injection-scenarios.test.ts`.
-
-build-scanner is a **static** scanner — it reads source files, it doesn't
-send requests to a running app. So it detects the *root-cause sink* in the
-application's own source (an unparameterized query built from
-concatenation/interpolation) rather than simulating an attacker's exploit
-traffic. Several scenarios below intentionally share the exact same sink,
-because what differs between them is the attacker's payload/technique
-against a live target, not the shape of the vulnerable source code:
-
-| # | Scenario | What's actually detected |
-|---|----------|---------------------------|
-| 1 | WHERE clause — hidden data | Concatenated/interpolated `WHERE` clause |
-| 2 | Login bypass | Concatenated `WHERE username=...AND password=...` |
-| 3 | DB version query (Oracle) | Same sink — exploited via `UNION SELECT ... FROM v$version` |
-| 4 | DB version query (MySQL/MSSQL) | Same sink — exploited via `UNION SELECT @@version` |
-| 5 | List DB contents (non-Oracle) | Same sink — exploited via `information_schema.tables` |
-| 6 | List DB contents (Oracle) | Same sink — exploited via `all_tables` |
-| 7–10 | UNION attacks (column count, text column, other tables, multi-value column) | Same sink — all four are UNION payload variations against one injectable point |
-| 11 | Blind, conditional responses | Same sink, response content differs on true/false |
-| 12 | Blind, conditional errors | Same sink; **not** flagged as an error leak — status-only, no error detail returned |
-| 13 | Visible error-based | Same sink **+ new check**: raw `err.message` sent to the client near a query call |
-| 14–15 | Blind, time delays (+ info retrieval) | Same sink — timing side-channel is invisible to static analysis |
-| 16–17 | Blind, out-of-band (interaction + exfiltration) | Same sink — OOB channel is invisible to static analysis |
-| 18 | Filter bypass via XML encoding | **New checks**: denylist quote-stripping (`.replace(/'/g, "")`) and denylist keyword-testing (`/select|union|.../i.test(...)`) flagged as bypassable regardless of the specific encoding trick used |
-
-If you need to actually confirm exploitability of these scenarios (not just
-find the source-level root cause), that requires a dynamic/active scanner
-that sends live payloads to a running target — a different, larger tool
-than this static one.
