@@ -89,7 +89,7 @@ run the scanner in CI without installing anything itself:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: your-org/build-scanner@v1
+- uses: laxmipsarva/build-scanner@v1
   with:
     path: .
     fail-on: high
@@ -101,7 +101,8 @@ Inputs mirror the CLI flags above: `path` (default `.`), `format` (`text` |
 action installs its own dependencies and builds from source on each run, so
 the job fails exactly the way a local `--fail-on` run would.
 
-Replace `your-org/build-scanner` with wherever this repo actually lives.
+Note: the `@v1` tag doesn't exist yet — until a release is tagged, reference
+the action by branch or commit SHA (e.g. `laxmipsarva/build-scanner@main`).
 
 ## Programmatic use
 
