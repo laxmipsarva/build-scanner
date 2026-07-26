@@ -1,0 +1,66 @@
+name: 'build-scanner'
+description: 'Static scanner for SQL/NoSQL injection, GraphQL, CORS, CSP, and CSRF vulnerabilities in a source folder'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Directory or file to scan, relative to the caller repo checkout'
+    required: false
+    default: '.'
+  format:
+    description: 'Output format: text | json'
+    required: false
+    default: 'text'
+  rules:
+    description: 'Comma-separated rule IDs to run (default: all)'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Exit non-zero if a finding at or above this severity is present (critical|high|medium|low|info)'
+    required: false
+    default: ''
+  list-files:
+    description: 'List every file that was scanned'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: ${{ github.action_path }}/package-lock.json
+
+    - name: Install build-scanner dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Build build-scanner
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm run build
+
+    - name: Run scan
+      shell: bash
+      run: |
+        args=("${{ inputs.path }}" --format "${{ inputs.format }}")
+
+        if [ -n "${{ inputs.rules }}" ]; then
+          args+=(--rules "${{ inputs.rules }}")
+        fi
+
+        if [ -n "${{ inputs.fail-on }}" ]; then
+          args+=(--fail-on "${{ inputs.fail-on }}")
+        fi
+
+        if [ "${{ inputs.list-files }}" = "true" ]; then
+          args+=(--list-files)
+        fi
+
+        node "${{ github.action_path }}/dist/cli.js" "${args[@]}"
